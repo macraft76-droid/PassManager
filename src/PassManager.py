@@ -58,7 +58,6 @@ def add_group():
         print(f"Группа '{new_group_name}' успешно создана.")
 
 def del_group():
-    """Удаляет группу из глобального словаря PASSWORD_GROUPS."""
     global PASSWORD_GROUPS
     
     print("\n--- УДАЛЕНИЕ ГРУППЫ ---")
