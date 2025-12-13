@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+env/
+
+# Visual Studio (скрытая папка настроек)
+.vs/
+*.sln
+*.pyproj
