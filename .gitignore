@@ -12,4 +12,4 @@ env/
 *salt.bin
 *master_hash.bin
 *master_config.json
-*DATA_FILE
+*password_data.bin
