@@ -11,3 +11,4 @@ env/
 *passwords.enc
 *salt.bin
 *master_hash.bin
+*master_config.json
