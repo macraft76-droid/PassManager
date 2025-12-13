@@ -2,7 +2,8 @@
 import sys
 import getpass
 import json
-import base64 # <-- ДОБАВЛЕНО
+import base64
+
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
@@ -28,6 +29,7 @@ ENCRYPTION_KEY = None
 def derive_encryption_key(password, salt):
     """
     Генерирует 32-байтный ключ, пригодный для Fernet, из мастер-пароля и соли.
+    Мы используем HKDF (Key Derivation Function) для этого.
     """
     info = b"password_manager_key_derivation"
     
@@ -41,15 +43,16 @@ def derive_encryption_key(password, salt):
     
     raw_key = hkdf.derive(password.encode('utf-8'))
     
-    # Преобразование 32-байтного ключа в Base64 для Fernet
+    # Fernet требует, чтобы ключ был в Base64, вот и конвертируем
     encoded_key = base64.urlsafe_b64encode(raw_key) 
     
     return encoded_key
 
 def encrypt_data(data):
+    """ Шифрует данные перед записью в файл с помощью Fernet. """
     global ENCRYPTION_KEY
-    if not ENCRYPTION_KEY:
-        raise ValueError("Ключ шифрования не установлен.")
+    if ENCRYPTION_KEY is None:
+        raise ValueError("Ключ шифрования не установлен. Это ошибка!")
 
     data_json = json.dumps(data).encode('utf-8')
     
@@ -59,9 +62,10 @@ def encrypt_data(data):
     return encrypted_data
 
 def decrypt_data(encrypted_data):
+    """ Расшифровывает данные из файла с помощью Fernet. """
     global ENCRYPTION_KEY
-    if not ENCRYPTION_KEY:
-        raise ValueError("Ключ шифрования не установлен.")
+    if ENCRYPTION_KEY is None:
+        raise ValueError("Ключ шифрования не установлен. Не могу расшифровать!")
 
     f = Fernet(ENCRYPTION_KEY)
     
@@ -75,6 +79,10 @@ def decrypt_data(encrypted_data):
         return None
 
 def hash_password(password, salt=None):
+    """
+    Делает хэш мастер-пароля с использованием PBKDF2HMAC.
+    Это специальный алгоритм, замедляющий перебор паролей.
+    """
     if salt is None:
         salt = os.urandom(SALT_SIZE) 
         
@@ -89,6 +97,7 @@ def hash_password(password, salt=None):
     return key, salt
 
 def check_password(stored_hash, salt, entered_password):
+    """ Проверяет, совпадает ли введенный пароль с сохраненным хэшем. """
     try:
         kdf = PBKDF2HMAC(
             algorithm=HASH_ALGORITHM,
@@ -97,9 +106,11 @@ def check_password(stored_hash, salt, entered_password):
             iterations=ITERATIONS,
             backend=default_backend()
         )
+        # Если пароль совпадает, функция verify завершится без исключения.
         kdf.verify(entered_password.encode('utf-8'), stored_hash)
         return True
     except Exception:
+        # Иначе, это неверный пароль.
         return False
 
 def save_master_config(config):
@@ -112,7 +123,7 @@ def save_master_config(config):
         with open(CONFIG_FILE, 'w') as f:
             json.dump(config_to_save, f, indent=4)
     except Exception as e:
-        print(f"Ошибка сохранения файла конфигурации: {e}")
+        print(f"Что-то пошло не так при сохранении файла конфигурации: {e}")
 
 def load_master_config():
     global MASTER_CONFIG
@@ -127,7 +138,7 @@ def load_master_config():
             return True
         
         except Exception as e:
-            print(f"Ошибка при загрузке или чтении файла {CONFIG_FILE}. Запустите снова.")
+            print(f"Ошибка при загрузке или чтении файла {CONFIG_FILE}. Может, он сломался? Запустите снова.")
             return False
     
     return False
@@ -139,8 +150,8 @@ def authenticate_user():
         print("\n--- ПЕРВЫЙ ЗАПУСК: УСТАНОВКА МАСТЕР-ПАРОЛЯ ---")
         
         while True:
-            password = getpass.getpass("Введите новый мастер-пароль (минимум 8 символов): ").strip()
-            confirm = getpass.getpass("Повторите пароль: ").strip()
+            password = getpass.getpass("Придумай мастер-пароль (минимум 8 символов): ").strip()
+            confirm = getpass.getpass("Повтори пароль: ").strip()
             
             if password == confirm and len(password) >= 8:
                 hashed_pw, salt = hash_password(password)
@@ -150,10 +161,10 @@ def authenticate_user():
                 
                 save_master_config(MASTER_CONFIG)
                 
-                print("Мастер-пароль успешно установлен. Добро пожаловать!")
+                print("Мастер-пароль установлен. Добро пожаловать!")
                 return True, password
             elif password != confirm:
-                print("Пароли не совпадают. Попробуйте снова.")
+                print("Пароли не совпадают. Попробуй еще раз.")
             else:
                 print("Пароль должен быть не менее 8 символов.")
                 
@@ -161,7 +172,7 @@ def authenticate_user():
         attempts = 3
         print("\n--- ВХОД В СИСТЕМУ ---")
         for attempt in range(attempts):
-            password = getpass.getpass("Введите мастер-пароль: ").strip()
+            password = getpass.getpass("Введи мастер-пароль: ").strip()
             
             if check_password(MASTER_CONFIG["hashed_password"], MASTER_CONFIG["salt"], password):
                 print("Вход успешен. Добро пожаловать!")
@@ -171,7 +182,7 @@ def authenticate_user():
                 if remaining > 0:
                     print(f"Неверный пароль. Осталось попыток: {remaining}.")
                 else:
-                    print("Неверный пароль. Все попытки исчерпаны.")
+                    print("Неверный пароль. Все, попытки кончились.")
                     break
 
         return False, None
@@ -198,20 +209,20 @@ def load_and_decrypt_database(password):
                 print("База данных успешно загружена и расшифрована.")
                 return True
             else:
-                return False 
+                return False
                 
         except Exception as e:
             print(f"Ошибка при чтении или дешифровании базы данных: {e}")
             return False
     else:
-        PASSWORD_GROUPS = {} 
+        PASSWORD_GROUPS = {}
         print("Файл базы данных не найден. Создана новая пустая база.")
         return True
 
 def save_and_encrypt_database():
     global PASSWORD_GROUPS, ENCRYPTION_KEY
-    if not ENCRYPTION_KEY:
-        print("Предупреждение: База данных не сохранена, ключ шифрования отсутствует.")
+    if ENCRYPTION_KEY is None:
+        print("Внимание: База данных не сохранена, ключ шифрования отсутствует.")
         return
 
     try:
@@ -227,7 +238,7 @@ def save_and_encrypt_database():
 
 
 def diplay_groups():
-    print("Сущестующие группы:")
+    print("Существующие группы:")
     if not PASSWORD_GROUPS:
         print("Группы пока не созданы.")
         return 0
@@ -271,7 +282,7 @@ def del_group():
     try:
         choice = input("Введите номер группы для удаления (0 - отмена): ").strip()
         if choice == '0':
-            return   
+            return    
         group_index = int(choice)
         group_to_delete = get_group_by_index(group_index)
         if group_to_delete:
@@ -294,7 +305,7 @@ def password_management_menu(group_name):
         if not current_group_data:
             print("В этой группе пока нет записей.")
         else:
-            print(f"{'№':<3} | {'Сервис':<15} | {'Логин':<15} | Пароль")
+            print(f"{'№':<3} | {'Сервис':<15} | {'Логин':<15} | Пароль (зашифрован)")
             print("-------------------------------------------------------")
             
             for index, entry in enumerate(current_group_data, 1):
