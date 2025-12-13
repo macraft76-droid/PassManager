@@ -1,44 +1,78 @@
 ﻿import os
 import sys
 import getpass
+import json
+import base64 # <-- ДОБАВЛЕНО
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
-import json
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 ITERATIONS = 480000 
 HASH_ALGORITHM = hashes.SHA256()
 SALT_SIZE = 16 
 
 CONFIG_FILE = 'master_config.json'
+DATA_FILE = 'password_data.bin'
 
 MASTER_CONFIG = {
     "salt": None, 
     "hashed_password": None 
 }
 
-PASSWORD_GROUPS = {
-    "Социальные сети": [
-        {
-            "service": "VK",
-            "login": "my_vk_login",
-            "encrypted_pw": "124dfv3"
-        },
-        {
-            "service": "Reddit",
-            "login": "my_redditor",
-            "encrypted_pw": "gfgdgsdf"
-        }
-    ],
-    "Работа": [
-        {
-            "service": "Рабочий комп",
-            "login": "admin_user",
-            "encrypted_pw": "124fd3f3"
-        }
-    ],
-    "Личное": []
-}
+PASSWORD_GROUPS = {}
+
+ENCRYPTION_KEY = None 
+
+def derive_encryption_key(password, salt):
+    """
+    Генерирует 32-байтный ключ, пригодный для Fernet, из мастер-пароля и соли.
+    """
+    info = b"password_manager_key_derivation"
+    
+    hkdf = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        info=info,
+        backend=default_backend()
+    )
+    
+    raw_key = hkdf.derive(password.encode('utf-8'))
+    
+    # Преобразование 32-байтного ключа в Base64 для Fernet
+    encoded_key = base64.urlsafe_b64encode(raw_key) 
+    
+    return encoded_key
+
+def encrypt_data(data):
+    global ENCRYPTION_KEY
+    if not ENCRYPTION_KEY:
+        raise ValueError("Ключ шифрования не установлен.")
+
+    data_json = json.dumps(data).encode('utf-8')
+    
+    f = Fernet(ENCRYPTION_KEY)
+    encrypted_data = f.encrypt(data_json)
+    
+    return encrypted_data
+
+def decrypt_data(encrypted_data):
+    global ENCRYPTION_KEY
+    if not ENCRYPTION_KEY:
+        raise ValueError("Ключ шифрования не установлен.")
+
+    f = Fernet(ENCRYPTION_KEY)
+    
+    try:
+        decrypted_json_bytes = f.decrypt(encrypted_data)
+        decrypted_data = json.loads(decrypted_json_bytes.decode('utf-8'))
+        
+        return decrypted_data
+    except Exception as e:
+        print(f"Ошибка дешифрования. Возможно, неверный мастер-пароль или повреждение файла: {e}")
+        return None
 
 def hash_password(password, salt=None):
     if salt is None:
@@ -54,21 +88,7 @@ def hash_password(password, salt=None):
     key = kdf.derive(password.encode('utf-8'))
     return key, salt
 
-def save_master_config(config):
-    """Сохраняет словарь MASTER_CONFIG в файл в формате JSON."""
-    try:
-        config_to_save = {
-            "salt": config["salt"].hex() if config["salt"] else None,
-            "hashed_password": config["hashed_password"].hex() if config["hashed_password"] else None
-        }
-
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config_to_save, f, indent=4)
-    except Exception as e:
-        print(f"Ошибка сохранения файла конфигурации: {e}")
-
 def check_password(stored_hash, salt, entered_password):
-    """Проверяет введенный пароль, сравнивая его хэш с сохраненным."""
     try:
         kdf = PBKDF2HMAC(
             algorithm=HASH_ALGORITHM,
@@ -82,8 +102,19 @@ def check_password(stored_hash, salt, entered_password):
     except Exception:
         return False
 
+def save_master_config(config):
+    try:
+        config_to_save = {
+            "salt": config["salt"].hex() if config["salt"] else None,
+            "hashed_password": config["hashed_password"].hex() if config["hashed_password"] else None
+        }
+
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config_to_save, f, indent=4)
+    except Exception as e:
+        print(f"Ошибка сохранения файла конфигурации: {e}")
+
 def load_master_config():
-    """Загружает словарь MASTER_CONFIG из файла."""
     global MASTER_CONFIG
     
     if os.path.exists(CONFIG_FILE):
@@ -99,7 +130,7 @@ def load_master_config():
             print(f"Ошибка при загрузке или чтении файла {CONFIG_FILE}. Запустите снова.")
             return False
     
-    return False 
+    return False
 
 def authenticate_user():
     global MASTER_CONFIG
@@ -120,7 +151,7 @@ def authenticate_user():
                 save_master_config(MASTER_CONFIG)
                 
                 print("Мастер-пароль успешно установлен. Добро пожаловать!")
-                return True
+                return True, password
             elif password != confirm:
                 print("Пароли не совпадают. Попробуйте снова.")
             else:
@@ -130,11 +161,11 @@ def authenticate_user():
         attempts = 3
         print("\n--- ВХОД В СИСТЕМУ ---")
         for attempt in range(attempts):
-            password = getpass.getpass("\n---Введите мастер-пароль: ").strip()
+            password = getpass.getpass("Введите мастер-пароль: ").strip()
             
             if check_password(MASTER_CONFIG["hashed_password"], MASTER_CONFIG["salt"], password):
                 print("Вход успешен. Добро пожаловать!")
-                return True
+                return True, password
             else:
                 remaining = attempts - (attempt + 1)
                 if remaining > 0:
@@ -143,7 +174,57 @@ def authenticate_user():
                     print("Неверный пароль. Все попытки исчерпаны.")
                     break
 
+        return False, None
+
+def load_and_decrypt_database(password):
+    global PASSWORD_GROUPS, ENCRYPTION_KEY
+
+    salt = MASTER_CONFIG.get("salt")
+    if salt is None:
+        print("Ошибка: Соль для шифрования не найдена.")
         return False
+        
+    ENCRYPTION_KEY = derive_encryption_key(password, salt)
+    
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, 'rb') as f:
+                encrypted_data = f.read()
+            
+            decrypted_data = decrypt_data(encrypted_data)
+            
+            if decrypted_data is not None:
+                PASSWORD_GROUPS = decrypted_data
+                print("База данных успешно загружена и расшифрована.")
+                return True
+            else:
+                return False 
+                
+        except Exception as e:
+            print(f"Ошибка при чтении или дешифровании базы данных: {e}")
+            return False
+    else:
+        PASSWORD_GROUPS = {} 
+        print("Файл базы данных не найден. Создана новая пустая база.")
+        return True
+
+def save_and_encrypt_database():
+    global PASSWORD_GROUPS, ENCRYPTION_KEY
+    if not ENCRYPTION_KEY:
+        print("Предупреждение: База данных не сохранена, ключ шифрования отсутствует.")
+        return
+
+    try:
+        encrypted_data = encrypt_data(PASSWORD_GROUPS)
+        
+        with open(DATA_FILE, 'wb') as f:
+            f.write(encrypted_data)
+        
+        print(f"База данных успешно зашифрована и сохранена в {DATA_FILE}")
+        
+    except Exception as e:
+        print(f"Критическая ошибка при шифровании/сохранении: {e}")
+
 
 def diplay_groups():
     print("Сущестующие группы:")
@@ -244,7 +325,8 @@ def add_password_entry(group_name):
     print(f"\n--- ДОБАВЛЕНИЕ ЗАПИСИ В ГРУППУ: {group_name} ---")
     service = input("Введите название сервиса: ").strip()
     login = input("Введите логин/имя пользователя: ").strip()
-    password = input("Введите пароль: ").strip() 
+    password = getpass.getpass("Введите пароль: ").strip()
+    
     if not (service and login and password):
         print("Все поля (сервис, логин, пароль) должны быть заполнены.")
         return
@@ -294,6 +376,7 @@ def main_menu():
         print("в - Выход из программы")
         choice = input("Ваш выбор:").strip()
         if choice == "в":
+            save_and_encrypt_database()
             sys.exit()
         elif choice == "с":
             add_group()
@@ -316,8 +399,16 @@ def main_menu():
 
 if __name__ == "__main__":
     print("__Менеджер Паролей__")
+    
     load_master_config()
-    if authenticate_user():
-        main_menu()
+    
+    auth_success, master_password = authenticate_user()
+    
+    if auth_success:
+        if load_and_decrypt_database(master_password):
+            main_menu()
+        else:
+            print("Критическая ошибка: Не удалось дешифровать базу данных. Выход.")
+            sys.exit()
     else:
         sys.exit()
