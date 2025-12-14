@@ -29,7 +29,8 @@ ENCRYPTION_KEY = None
 def derive_encryption_key(password, salt):
     """
     Генерирует 32-байтный ключ, пригодный для Fernet, из мастер-пароля и соли.
-    Мы используем HKDF (Key Derivation Function) для этого.
+    Мы используем HKDF (Key Derivation Function) для этого. Так как обычный пароль слишком короткий используем
+    алгоритм HKDF и им потом шифруем базу
     """
     info = b"password_manager_key_derivation"
     
