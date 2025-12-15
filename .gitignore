@@ -8,8 +8,5 @@ env/
 .vs/
 *.sln
 *.pyproj
-*passwords.enc
-*salt.bin
-*master_hash.bin
-*master_config.json
-*password_data.bin
+master_config.json
+password_data.bin
